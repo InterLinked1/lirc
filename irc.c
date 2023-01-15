@@ -158,6 +158,9 @@ void irc_client_destroy(struct irc_client *client)
 		close(client->sfd);
 		client->sfd = -1;
 	}
+	if (client->autojoin) { /* If we added an autojoin but never actually authenticated, then this will still be set */
+		free(client->autojoin);
+	}
 	if (client->nickname) {
 		free(client->nickname);
 	}
