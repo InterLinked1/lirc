@@ -881,6 +881,10 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (!port) { /* Set the right default port if none was provided explicitly */
+		port = flags & IRC_CLIENT_USE_TLS ? IRC_DEFAULT_TLS_PORT : IRC_DEFAULT_PORT;
+	}
+
 	printf("%s\n", CLIENT_COPYRIGHT); /* Initial identification */
 	set_term_title(CLIENT_VERSION);
 
@@ -929,6 +933,9 @@ int main(int argc, char *argv[])
 		}
 
 		if (password) {
+			if (debug_level) {
+				printf("Connecting and authenticating...\n");
+			}
 			/* As soon as we create the client, destroy the password, so it doesn't linger in memory. */
 			if (password && password == passwordbuf) {
 				memset(passwordbuf, 0, sizeof(passwordbuf));
@@ -943,6 +950,10 @@ int main(int argc, char *argv[])
 			if (fgchan) {
 				set_fg_chan(fgchan);
 			}
+		} else {
+			if (debug_level) {
+				printf("Connecting without authenticating...\n");
+			}
 		}
 		/* Now, start the main loop to receive messages from the server */
 		if (pthread_create(&rx_thread_id, NULL, rx_thread, (void*) client)) {
@@ -950,6 +961,9 @@ int main(int argc, char *argv[])
 		}
 	} else {
 		/* Start the client without being connected to anything. */
+		if (debug_level) {
+			printf("Started without active connection\n");
+		}
 		client = irc_client_new("", 0, "", "");
 		if (!client) {
 			mainres = -1;
