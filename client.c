@@ -215,8 +215,7 @@ static void *rx_thread(void *varg)
 
 	clientlog = fopen("client.txt", "a"); /* Create or append */
 	if (!clientlog) {
-		client_log(IRC_LOG_ERR, "Failed to open file\n");
-		return NULL;
+		client_log(IRC_LOG_ERR, "Failed to open file: %s\n", strerror(errno));
 	}
 
 	start = readbuf;
@@ -274,7 +273,9 @@ begin:
 			}
 
 			memset(&msg, 0, sizeof(msg));
-			fprintf(clientlog, "%s\n", start); /* Append to log file */
+			if (clientlog) {
+				fprintf(clientlog, "%s\n", start); /* Append to log file */
+			}
 			if (!irc_parse_msg(&msg, start)) {
 				handle_irc_msg(client, &msg);
 			}
