@@ -616,7 +616,7 @@ static void handle_irc_msg(struct irc_client *client, struct irc_msg *msg)
 		char *tmp, *realnick;
 		irc_print("%s is %snow known as%s %s\n", msg->prefix, COLOR_CYAN, COLOR_RESET, msg->body);
 		strncpy(oldnick, msg->prefix, sizeof(oldnick) - 1);
-		oldnick[sizeof(oldnick)] = '\0'; /* In case buffer is full */
+		oldnick[sizeof(oldnick) - 1] = '\0'; /* In case buffer is full */
 		tmp = oldnick;
 		realnick = strsep(&tmp, "!");
 		if (realnick) {
