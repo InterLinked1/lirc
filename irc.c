@@ -102,7 +102,7 @@ static void __attribute__ ((format (gnu_printf, 6, 7))) __irc_log(enum irc_log_l
 struct irc_client *irc_client_new(const char *hostname, unsigned int port, const char *username, const char *password)
 {
 	struct irc_client *client;
-	int hostlen, userlen, passlen;
+	size_t hostlen, userlen, passlen;
 
 	if (!hostname) {
 		irc_err("Missing hostname\n");
@@ -130,11 +130,11 @@ struct irc_client *irc_client_new(const char *hostname, unsigned int port, const
 	client->sfd = -1;
 
 	client->hostname = client->data;
-	strcpy((char *) client->hostname, hostname); /* Safe */
+	strcpy(client->data, hostname); /* Safe */
 	client->username = client->hostname + hostlen + 1;
-	strcpy((char *) client->username, username); /* Safe */
+	strcpy(client->data + hostlen + 1, username); /* Safe */
 	client->password = client->username + userlen + 1;
-	strcpy((char *) client->password, password); /* Safe */
+	strcpy(client->data + hostlen + 1 + userlen + 1, password); /* Safe */
 
 	client->nickname = strdup(client->username); /* Default nick to username */
 
@@ -262,11 +262,11 @@ int irc_client_connect(struct irc_client *client)
 	for (ai = res; ai; ai = ai->ai_next) {
 		if (ai->ai_family == AF_INET) {
 			saddr_in = (struct sockaddr_in *) ai->ai_addr;
-			saddr_in->sin_port = htons(client->port);
+			saddr_in->sin_port = htons((uint16_t) client->port);
 			inet_ntop(ai->ai_family, &saddr_in->sin_addr, ip, sizeof(ip)); /* Print IPv4*/
 		} else if (ai->ai_family == AF_INET6) {
 			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
-			saddr_in6->sin6_port = htons(client->port);
+			saddr_in6->sin6_port = htons((uint16_t) client->port);
 			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, ip, sizeof(ip)); /* Print IPv6 */
 		}
 		if (!strcmp(ip, "130.185.232.126")) {
@@ -277,7 +277,7 @@ int irc_client_connect(struct irc_client *client)
 			irc_err("socket: %s\n", strerror(errno));
 			continue;
 		}
-		irc_info("Attempting connection to %s:%d\n", ip, client->port);
+		irc_info("Attempting %s connection to %s:%d\n", client->tls ? "secure" : "insecure", ip, client->port);
 		if (connect(client->sfd, ai->ai_addr, ai->ai_addrlen)) {
 			irc_err("connect: %s\n", strerror(errno));
 			close(client->sfd);
@@ -293,8 +293,6 @@ int irc_client_connect(struct irc_client *client)
 	}
 
 	irc_debug(1, "Connected to %s:%d\n", client->hostname, client->port);
-
-#define SSL_ABORT(ctx, ssl) SSL_CTX_free(ctx); SSL_free(ssl); ctx = NULL; ssl = NULL;
 
 #ifdef HAVE_OPENSSL
 	if (client->tls) {
@@ -417,16 +415,16 @@ int irc_read(struct irc_client *client, char *buf, int len)
 	int bytes;
 #ifdef HAVE_OPENSSL
 	if (client->tls) {
-		bytes = SSL_read(client->ssl, buf, len);
+		bytes = (int) SSL_read(client->ssl, buf, (size_t) len);
 	} else
 #endif
 	{
-		bytes = read(client->sfd, buf, len);
+		bytes = (int) read(client->sfd, buf, (size_t) len);
 	}
 	if (bytes > 0) {
 		irc_debug(10, "<= %s %.*s", irc_client_hostname(client), bytes, buf); /* Should already end in LF, additional one not needed */
 	} else {
-		irc_debug(1, "read returned %d\n", bytes);
+		irc_debug(1, "read returned %d%s%s\n", bytes, bytes == -1 ? ": " : "", bytes == -1 ? strerror(errno) : "");
 		client->active = 0;
 	}
 	return bytes;
@@ -444,11 +442,11 @@ int irc_write(struct irc_client *client, const char *buf, int len)
 
 #ifdef HAVE_OPENSSL
 	if (client->tls) {
-		written = SSL_write(client->ssl, buf, len);
+		written = (int) SSL_write(client->ssl, buf, (size_t) len);
 	} else
 #endif
 	{
-		written = write(client->sfd, buf, len);
+		written = (int) write(client->sfd, buf, (size_t) len);
 	}
 	if (written != len) {
 		irc_debug(5, "write returned %d\n", written);
@@ -505,7 +503,7 @@ static char *base64_encode(const char *data, int input_length, int *outlen)
 	int i, j, output_len;
 
 	output_len = 4 * ((input_length + 2) / 3);
-	encoded_data = malloc(output_len);
+	encoded_data = malloc((size_t) output_len);
 	if (!encoded_data) {
 		return NULL;
 	}
@@ -583,7 +581,7 @@ static int wait_for_response(struct irc_client *client, char *buf, size_t len, i
 		}
 		/* Read it into the caller's buffer, so that if further checks
 		 * need to be done when we return, they can be done. */
-		bytes = irc_read(client, buf, len - 1);
+		bytes = irc_read(client, buf, (int) len - 1);
 		if (bytes <= 0) {
 			return -1;
 		}
