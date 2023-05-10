@@ -62,7 +62,7 @@ struct irc_client {
 	/* Internal */
 	unsigned int active:1;			/*!< Whether client is currently actively connected to a server */
 	/* Flexible Struct Member */
-	char data[0];
+	char data[];
 };
 
 static void (*log_callback)(enum irc_log_level level, int sublevel, const char *file, int line, const char *func, const char *msg) = NULL;
@@ -133,7 +133,7 @@ struct irc_client *irc_client_new(const char *hostname, unsigned int port, const
 	strcpy(client->data, hostname); /* Safe */
 	client->username = client->hostname + hostlen + 1;
 	strcpy(client->data + hostlen + 1, username); /* Safe */
-	client->password = client->username + userlen + 1;
+	client->password = client->hostname + hostlen + userlen + 2;
 	strcpy(client->data + hostlen + 1 + userlen + 1, password); /* Safe */
 
 	client->nickname = strdup(client->username); /* Default nick to username */
