@@ -37,7 +37,11 @@
 #include <openssl/bio.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#endif
+
+#ifndef ROOT_CERT_PATH
+#define ROOT_CERT_PATH "/etc/ssl/certs/ca-certificates.crt" /* Debian */
+#endif /* ROOT_CERT_PATH */
+#endif /* HAVE_OPENSSL */
 
 #include <assert.h>
 #include "irc.h"
@@ -307,6 +311,8 @@ int irc_client_connect(struct irc_client *client)
 			irc_err("Failed to setup new SSL context\n");
 			return -1;
 		}
+		SSL_CTX_set_verify(client->ctx, SSL_VERIFY_PEER, NULL);
+		SSL_CTX_load_verify_locations(client->ctx, ROOT_CERT_PATH, NULL);
 		SSL_CTX_set_options(client->ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3); /* Only use TLS */
 		client->ssl = SSL_new(client->ctx);
 		if (!client->ssl) {
@@ -346,18 +352,12 @@ int irc_client_connect(struct irc_client *client)
 		OPENSSL_free(str);
 		X509_free(server_cert);
 		verify_result = SSL_get_verify_result(client->ssl);
-		/* XXX Verification always seems to fail
-		 * https://stackoverflow.com/questions/32697954/why-does-ssl-get-verify-resultssl-throw-error-code-20
-		 * https://stackoverflow.com/questions/27970611/openssl-ssl-get-verify-result-returns-error-20
-		 * https://security.stackexchange.com/questions/200126/what-is-being-verified-in-openssls-ssl-get-verify-result
-		 */
 		if (verify_result != X509_V_OK) {
 			if (client->tlsverify) {
 				irc_err("SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
 				goto sslcleanup; /* If told to verify, then this is fatal */
 			}
-			/* XXX Verification always fails, so do debug for now, rather than warning log */
-			irc_debug(1, "SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
+			irc_warn("SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
 		} else {
 			irc_debug(4, "TLS verification successful\n");
 		}
@@ -892,14 +892,3 @@ int irc_parse_msg(struct irc_msg *msg, char *s)
 	}
 	return 0;
 }
-
-/*! \todo implement the whole RFC - function wrappers to make everything easy: https://www.rfc-editor.org/rfc/rfc1459
- * https://ircv3.net/irc/
- *  https://modern.ircdocs.horse/ - https://modern.ircdocs.horse/index.html
- * can test client: https://web.libera.chat/
- * e.g. auto-opping users in Libera
- * door_irc client can allow executing a script callback on each msg (external) - it can return a response to send!
- * net_irc will be the IRC server itself - sep from door_chat, but can just use door_irc to connect
- *   can run tests on IRC library alone once it has the server side too.
- *   use Ambassador to test the server functionality part of it.
- */
