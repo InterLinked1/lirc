@@ -38,9 +38,10 @@
 #include <assert.h>
 #include <termios.h>
 
-#include "irc.h"
+#include <lirc/irc.h>
+#include <lirc/numerics.h>
 
-#define CLIENT_VERSION "LIRC client 0.1.0" /* LIRC refers to the library, this is the LIRC client demo program */
+#define CLIENT_VERSION "LIRC client 0.2.0" /* LIRC refers to the library, this is the LIRC client */
 #define CLIENT_COPYRIGHT CLIENT_VERSION ", Copyright (C) 2023 Naveen Albert"
 
 static pthread_t rx_thread_id;
@@ -199,95 +200,19 @@ static void set_fg_chan(const char *fgchan)
 }
 
 /* Forward declaration */
-static void handle_irc_msg(struct irc_client *client, struct irc_msg *msg);
+static void handle_irc_msg(void *data, struct irc_msg *msg);
 
 static void *rx_thread(void *varg)
 {
 	/* Thread will get killed on shutdown */
-	int res = 0;
-	char readbuf[IRC_MAX_MSG_LEN + 1];
-	struct irc_msg msg;
-	char *prevbuf, *mybuf = readbuf;
-	int prevlen, mylen = sizeof(readbuf) - 1;
 	struct irc_client *client = varg;
-	char *start, *eom;
-	int rounds;
 
 	clientlog = fopen("client.txt", "a"); /* Create or append */
 	if (!clientlog) {
 		client_log(IRC_LOG_ERR, "Failed to open file: %s\n", strerror(errno));
 	}
 
-	start = readbuf;
-	for (;;) {
-begin:
-		rounds = 0;
-		if (mylen <= 1) {
-			/* IRC max message is 512, but we could have received multiple messages in one read() */
-			char *a;
-			/* Shift current message to beginning of the whole buffer */
-			for (a = readbuf; *start; a++, start++) {
-				*a = *start;
-			}
-			*a = '\0';
-			mybuf = a;
-			mylen = sizeof(readbuf) - 1 - (mybuf - readbuf);
-			start = readbuf;
-			if (mylen <= 1) { /* Couldn't shift, whole buffer was full */
-				/* Could happen but this would not be valid. Abort read and reset. */
-				client_log(IRC_LOG_ERR, "Buffer truncation!\n");
-				start = readbuf;
-				mybuf = readbuf;
-				mylen = sizeof(readbuf) - 1;
-			}
-		}
-		/* Wait for data from server */
-		if (res != sizeof(readbuf) - 1) {
-			/* XXX We don't poll if we read() into an entirely full buffer and there's still more data to read.
-			 * poll() won't return until there's even more data (but it feels like it should). */
-			res = irc_poll(client, -1, -1);
-			if (res <= 0) {
-				break;
-			}
-		}
-		prevbuf = mybuf;
-		prevlen = mylen;
-		res = irc_read(client, mybuf, mylen);
-		if (res <= 0) {
-			break;
-		}
-
-		mybuf[res] = '\0'; /* Safe */
-		do {
-			eom = strstr(mybuf, "\r\n");
-			if (!eom) {
-				/* read returned incomplete message */
-				mybuf = prevbuf + res;
-				mylen = prevlen - res;
-				goto begin; /* In a double loop, can't continue */
-			}
-
-			/* Got more than one message? */
-			if (*(eom + 2)) {
-				*(eom + 1) = '\0'; /* Null terminate before the next message starts */
-			}
-
-			memset(&msg, 0, sizeof(msg));
-			if (clientlog) {
-				fprintf(clientlog, "%s\n", start); /* Append to log file */
-			}
-			if (!irc_parse_msg(&msg, start)) {
-				handle_irc_msg(client, &msg);
-			}
-
-			mylen -= (eom + 2 - mybuf);
-			start = mybuf = eom + 2;
-			rounds++;
-		} while (mybuf && *mybuf);
-
-		start = mybuf = readbuf; /* Reset to beginning */
-		mylen = sizeof(readbuf) - 1;
-	}
+	irc_loop(client, clientlog, handle_irc_msg, client);
 
 	client_log(IRC_LOG_INFO, "IRC client receive thread has exited\n");
 	assert(!irc_client_connected(client));
@@ -448,192 +373,159 @@ static int get_password(char *buf, size_t len)
 
 static struct timeval ctcp_ping_time;
 
-static void handle_irc_msg(struct irc_client *client, struct irc_msg *msg)
+static void handle_irc_msg(void *data, struct irc_msg *msg)
 {
-	if (msg->numeric) {
-		switch (msg->numeric) {
-			/* 1 to 5 */
-			case RPL_WELCOME:
-			case RPL_YOURHOST:
-			case RPL_CREATED:
-			case RPL_MYINFO:
-			case RPL_ISUPPORT:
-				irc_print("%s\n", msg->body);
-				break;
-			/* 250 to 255 */
-			case RPL_STATSDLINE:
-			case RPL_LUSERCLIENT:
-			case RPL_LUSEROP:
-			case RPL_LUSERUNKNOWN:
-			case RPL_LUSERCHANNELS:
-			case RPL_LUSERME:
-			/* 265 to 266 */
-			case RPL_LOCALUSERS:
-			case RPL_GLOBALUSERS:
-				irc_print("%s\n", msg->body);
-				break;
-			/* 375, 372, 376 */
-			case RPL_MOTDSTART:
-			case RPL_MOTD:
-			case RPL_ENDOFMOTD:
-				irc_print("%s\n", msg->body);
-				break;
-			/* 353, 366 */
-			case RPL_NAMREPLY:
-			case RPL_ENDOFNAMES:
-				irc_print("%s\n", msg->body);
-				break;
-			case RPL_VISIBLEHOST: /* 396 */
-				irc_print("%s\n", msg->body);
-				break;
-			case RPL_LISTSTART: /* 321-323 */
-			case RPL_LIST:
-			case RPL_LISTEND:
-				irc_print("%s\n", msg->body);
-				break;
-			case ERR_NOTEXTTOSEND: /* 412 */
-				irc_print("%s %s\n", msg->prefix, msg->body);
-				break;
-			case ERR_CANNOTSENDTOCHAN: /* 404 */
-			case ERR_UNKNOWNCOMMAND: /* 421 */
-				irc_print("%s%s %s%s\n", COLOR_RED, msg->prefix, msg->body, COLOR_RESET);
-				break;
-			/* Intentionally complain if we haven't explicitly handled a numeric, so we can choose how to best handle it */
-			default:
-				client_log(IRC_LOG_WARN, "Unhandled numeric: prefix: %s, num: %d, body: %s\n", msg->prefix, msg->numeric, msg->body);
-		}
-		return;
-	}
-	/* else, it's a command */
-	if (!msg->command) {
-		assert(0);
-	}
-	if (!strcmp(msg->command, "PRIVMSG") || !strcmp(msg->command, "NOTICE")) { /* This is intentionally first, as it's the most common one. */
-		/* NOTICE is same as PRIVMSG, but should never be acknowledged (replied to), to prevent loops, e.g. for use with bots. */
-		char *channel, *body = msg->body;
+	char oldnick[64];
+	struct irc_client *client = data;
+	char *tmp, *realnick;
 
-		/* Format of msg->body here is CHANNEL :BODY */
-		channel = strsep(&body, " ");
-		body++; /* Skip : */
-
-		/* Mentions, e.g. jsmith: you there? */
-		if (!do_not_disturb && !strncasecmp(body, irc_client_nickname(client), strlen(irc_client_nickname(client)))) {
-			irc_print("\a"); /* Ring the bell to grab the user's attention, s/he just got mentioned */
-		}
-
-		if (*body == 0x01) { /* sscanf stripped off the leading : */
-			/* CTCP command: known extended data = ACTION, VERSION, TIME, PING, DCC, SED, etc. */
-			/* Remember: CTCP requests use PRIVMSG, responses use NOTICE! */
-			char *tmp, *ctcp_name;
-			enum irc_ctcp ctcp;
-
-			body++; /* Skip leading \001 */
-			if (!*body) {
-				client_log(IRC_LOG_ERR, "Nothing after \\001?\n");
-				return;
-			}
-			/* Don't print the trailing \001 */
-			tmp = strchr(body, 0x01);
-			if (tmp) {
-				*tmp = '\0';
-			} else {
-				client_log(IRC_LOG_WARN, "Couldn't find trailing \\001?\n");
-			}
-
-			ctcp_name = strsep(&body, " ");
-
-			tmp = strchr(msg->prefix, '!');
-			if (tmp) {
-				*tmp = '\0'; /* Strip everything except the nickname from the prefix */
-			}
-
-			ctcp = irc_ctcp_from_string(ctcp_name);
-			if (ctcp < 0) {
-				client_log(IRC_LOG_ERR, "Unsupported CTCP extended data type: %s\n", ctcp_name);
-				return;
-			}
-
-			if (!strcmp(msg->command, "PRIVMSG")) {
-				switch (ctcp) {
-				case CTCP_ACTION: /* /me, /describe */
-					irc_print("[ACTION] %s %s %s\n", msg->prefix, channel, body);
+	switch (irc_msg_type(msg)) {
+		case IRC_NUMERIC:
+			switch (irc_msg_numeric(msg)) {
+				/* 1 to 5 */
+				case RPL_WELCOME:
+				case RPL_YOURHOST:
+				case RPL_CREATED:
+				case RPL_MYINFO:
+				case RPL_ISUPPORT:
+					irc_print("%s\n", irc_msg_body(msg));
 					break;
-				case CTCP_VERSION:
-					irc_client_ctcp_reply(client, msg->prefix, ctcp, CLIENT_VERSION);
+				/* 250 to 255 */
+				case RPL_STATSDLINE:
+				case RPL_LUSERCLIENT:
+				case RPL_LUSEROP:
+				case RPL_LUSERUNKNOWN:
+				case RPL_LUSERCHANNELS:
+				case RPL_LUSERME:
+				/* 265 to 266 */
+				case RPL_LOCALUSERS:
+				case RPL_GLOBALUSERS:
+					irc_print("%s\n", irc_msg_body(msg));
 					break;
-				case CTCP_PING:
-					irc_client_ctcp_reply(client, msg->prefix, ctcp, body); /* Reply with the data that was sent */
+				/* 375, 372, 376 */
+				case RPL_MOTDSTART:
+				case RPL_MOTD:
+				case RPL_ENDOFMOTD:
+					irc_print("%s\n", irc_msg_body(msg));
 					break;
-				case CTCP_TIME:
-					{
-						char timebuf[32];
-						time_t nowtime;
-						struct tm nowdate;
-
-						nowtime = time(NULL);
-						localtime_r(&nowtime, &nowdate);
-						strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
-						irc_client_ctcp_reply(client, msg->prefix, ctcp, timebuf);
-					}
+				/* 353, 366 */
+				case RPL_NAMREPLY:
+				case RPL_ENDOFNAMES:
+					irc_print("%s\n", irc_msg_body(msg));
 					break;
+				case RPL_VISIBLEHOST: /* 396 */
+					irc_print("%s\n", irc_msg_body(msg));
+					break;
+				case RPL_LISTSTART: /* 321-323 */
+				case RPL_LIST:
+				case RPL_LISTEND:
+					irc_print("%s\n", irc_msg_body(msg));
+					break;
+				case ERR_NOTEXTTOSEND: /* 412 */
+					irc_print("%s %s\n", irc_msg_prefix(msg), irc_msg_body(msg));
+					break;
+				case ERR_CANNOTSENDTOCHAN: /* 404 */
+				case ERR_UNKNOWNCOMMAND: /* 421 */
+					irc_print("%s%s %s%s\n", COLOR_RED, irc_msg_prefix(msg), irc_msg_body(msg), COLOR_RESET);
+					break;
+				/* Intentionally complain if we haven't explicitly handled a numeric, so we can choose how to best handle it */
 				default:
-					client_log(IRC_LOG_ERR, "Unhandled CTCP extended data type: %s\n", ctcp_name);
-				}
-			} else { /* NOTICE (reply) */
-				struct timeval tnow;
-				double secs;
-				switch (ctcp) {
-				case CTCP_PING:
-					/* XXX We don't keep track the ping reply is from the same user to whom we sent a ping request */
-					gettimeofday(&tnow, NULL);
-					secs = (1.0 * (tnow.tv_sec - ctcp_ping_time.tv_sec) * 1000000 + tnow.tv_usec - ctcp_ping_time.tv_usec) / 1000000;
-					irc_print("Ping reply from %s in %.3f seconds\n", msg->prefix, secs);
-					break;
-				default:
-					irc_print("CTCP %s reply %s from %s\n", ctcp_name, body, msg->prefix);
-					break;
-				}
+					client_log(IRC_LOG_WARN, "Unhandled numeric: prefix: %s, num: %d, body: %s\n", irc_msg_prefix(msg), irc_msg_numeric(msg), irc_msg_body(msg));
 			}
-		} else {
-			irc_print("%s %s %s\n", msg->prefix, channel, body);
-		}
-	} else if (!strcmp(msg->command, "PING")) {
-		/* Reply with the same data that it sent us (some servers may actually require that) */
-		int sres = irc_send(client, "PONG :%s", msg->body ? msg->body + 1 : ""); /* If there's a body, skip the : and bounce the rest back */
-		if (sres) {
 			return;
-		}
-	} else if (!strcmp(msg->command, "JOIN")) {
-		irc_print("%s has %sjoined%s %s\n", msg->prefix, COLOR_GREEN, COLOR_RESET, msg->body);
-	} else if (!strcmp(msg->command, "PART")) {
-		irc_print("%s has %sleft%s %s\n", msg->prefix, COLOR_RED, COLOR_RESET, msg->body);
-	} else if (!strcmp(msg->command, "QUIT")) {
-		irc_print("%s has %squit%s %s\n", msg->prefix, COLOR_RED, COLOR_RESET, msg->body);
-	} else if (!strcmp(msg->command, "KICKED")) {
-		irc_print("%s has been %skicked%s %s\n", msg->prefix, COLOR_RED, COLOR_RESET, msg->body);
-	} else if (!strcmp(msg->command, "NICK")) {
-		char oldnick[64];
-		char *tmp, *realnick;
-		irc_print("%s is %snow known as%s %s\n", msg->prefix, COLOR_CYAN, COLOR_RESET, msg->body);
-		strncpy(oldnick, msg->prefix, sizeof(oldnick) - 1);
-		oldnick[sizeof(oldnick) - 1] = '\0'; /* In case buffer is full */
-		tmp = oldnick;
-		realnick = strsep(&tmp, "!");
-		if (realnick) {
-			if (!strcmp(realnick, irc_client_nickname(client))) {
-				/* We successfully updated our nickname */
-				irc_client_set_nick(client, msg->body + 1); /* Skip leading : */
-				update_prompt(client); /* If we changed our nick, update the prompt accordingly to reflect that */
+		case IRC_CMD_PRIVMSG:
+		case IRC_CMD_NOTICE:
+			/* Mentions, e.g. jsmith: you there? */
+			if (!do_not_disturb && !strncasecmp(irc_msg_body(msg), irc_client_nickname(client), strlen(irc_client_nickname(client)))) {
+				irc_print("\a"); /* Ring the bell to grab the user's attention, s/he just got mentioned */
 			}
-		}
-	} else if (!strcmp(msg->command, "MODE")) {
-		irc_print("%s %s\n", msg->prefix, msg->body);
-	} else if (!strcmp(msg->command, "ERROR")) {
-		irc_print("%s%s%s\n", COLOR_RED, msg->body, COLOR_RESET);
-	} else if (!strcmp(msg->command, "TOPIC")) {
-		irc_print("%s has %schanged the topic%s of %s\n", msg->prefix, COLOR_GREEN, COLOR_RESET, msg->body);
-	} else {
-		client_log(IRC_LOG_WARN, "Unhandled command: prefix: %s, command: %s, body: %s\n", msg->prefix, msg->command, msg->body);
+			if (irc_msg_is_ctcp(msg) && !irc_parse_msg_ctcp(msg)) {
+				/* Remember: CTCP requests use PRIVMSG, responses use NOTICE! */
+				if (irc_msg_type(msg) == IRC_CMD_PRIVMSG) {
+					/* CTCP command: known extended data = ACTION, VERSION, TIME, PING, DCC, SED, etc. */
+					switch (irc_msg_ctcp_type(msg)) {
+						case CTCP_ACTION:
+							irc_print("[ACTION] %s %s %s\n", irc_msg_prefix(msg), irc_msg_channel(msg), irc_msg_body(msg));
+							break;
+						case CTCP_PING:
+							irc_client_ctcp_reply(client, irc_msg_prefix(msg), irc_msg_ctcp_type(msg), irc_msg_body(msg)); /* Reply with the data that was sent */
+							break;
+						case CTCP_TIME:
+							{
+								char timebuf[32];
+								time_t nowtime;
+								struct tm nowdate;
+
+								nowtime = time(NULL);
+								localtime_r(&nowtime, &nowdate);
+								strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
+								irc_client_ctcp_reply(client, irc_msg_prefix(msg), irc_msg_ctcp_type(msg), timebuf);
+							}
+							break;
+						default:
+							client_log(IRC_LOG_ERR, "Unhandled CTCP extended data type: %s\n", irc_ctcp_name(irc_msg_ctcp_type(msg)));
+					}
+				} else {
+					struct timeval tnow;
+					double secs;
+					switch (irc_msg_ctcp_type(msg)) {
+						case CTCP_PING:
+							/* XXX We don't keep track the ping reply is from the same user to whom we sent a ping request */
+							gettimeofday(&tnow, NULL);
+							secs = (1.0 * (tnow.tv_sec - ctcp_ping_time.tv_sec) * 1000000 + tnow.tv_usec - ctcp_ping_time.tv_usec) / 1000000;
+							irc_print("Ping reply from %s in %.3f seconds\n", irc_msg_prefix(msg), secs);
+							break;
+						default:
+							irc_print("CTCP %s reply %s from %s\n", irc_ctcp_name(irc_msg_ctcp_type(msg)), irc_msg_body(msg), irc_msg_prefix(msg));
+							break;
+					}
+				}
+			} else {
+				/* Enclose the entire username + mask in <>, even though this is more than just the username,
+				 * just to better visually differentiate the user from the channel name. */
+				irc_print("%s <%s> %s\n", irc_msg_channel(msg), irc_msg_prefix(msg), irc_msg_body(msg));
+			}
+			break;
+		case IRC_CMD_PING:
+			irc_client_pong(client, msg);
+			break;
+		case IRC_CMD_JOIN:
+			irc_print("%s has %sjoined%s %s\n", irc_msg_prefix(msg), COLOR_GREEN, COLOR_RESET, irc_msg_channel(msg));
+			break;
+		case IRC_CMD_PART:
+			irc_print("%s has %sleft%s %s\n", irc_msg_prefix(msg), COLOR_RED, COLOR_RESET, irc_msg_channel(msg));
+			break;
+		case IRC_CMD_QUIT:
+			irc_print("%s has %squit%s %s\n", irc_msg_prefix(msg), COLOR_RED, COLOR_RESET, irc_msg_body(msg) ? irc_msg_body(msg) : "");
+			break;
+		case IRC_CMD_KICK:
+			irc_print("%s has been %skicked%s %s\n", irc_msg_prefix(msg), COLOR_RED, COLOR_RESET, irc_msg_body(msg) ? irc_msg_body(msg) : "");
+			break;
+		case IRC_CMD_NICK:
+			irc_print("%s is %snow known as%s %s\n", irc_msg_prefix(msg), COLOR_CYAN, COLOR_RESET, irc_msg_body(msg));
+			strncpy(oldnick, irc_msg_prefix(msg), sizeof(oldnick) - 1);
+			oldnick[sizeof(oldnick) - 1] = '\0'; /* In case buffer is full */
+			tmp = oldnick;
+			realnick = strsep(&tmp, "!");
+			if (realnick) {
+				if (!strcmp(realnick, irc_client_nickname(client))) {
+					/* We successfully updated our nickname */
+					irc_client_set_nick(client, irc_msg_body(msg) + 1); /* Skip leading : */
+					update_prompt(client); /* If we changed our nick, update the prompt accordingly to reflect that */
+				}
+			}
+			break;
+		case IRC_CMD_MODE:
+			irc_print("%s %s\n", irc_msg_prefix(msg), irc_msg_body(msg));
+			break;
+		case IRC_CMD_ERROR:
+			irc_print("%s%s%s\n", COLOR_RED, irc_msg_body(msg), COLOR_RESET);
+			break;
+		case IRC_CMD_TOPIC:
+			irc_print("%s has %schanged the topic%s of %s\n", irc_msg_prefix(msg), COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
+			break;
+		default:
+			client_log(IRC_LOG_WARN, "Unhandled command: prefix: %s, command: %s, body: %s\n", irc_msg_prefix(msg), irc_msg_command(msg), irc_msg_body(msg));
 	}
 }
 
@@ -676,7 +568,7 @@ static int handle_send_msg(struct irc_client **clientptr, char *input)
 			printf("/ctcp <TARGET> <CMD>      - Send CTCP command request to another user\n");
 			printf("/nick <NICK>              - Change nickname to NICK\n");
 			printf("/topic <CHAN> <TOPIC>     - Set channel CHAN's topic to TOPIC\n");
-			printf("/lsit [<CHANS>]           - List channels on server (with optional filter of comma-separated channels)\n");
+			printf("/list [<CHANS>]           - List channels on server (with optional filter of comma-separated channels)\n");
 			printf("/invite <NICK> <CHAN>     - Invite user NICK to channel CHAN\n");
 			printf("/identify <USER> <PASS>   - Authenticate to the server if not authenticated already.\n");
 			printf("/server <HOST> <PORT>     - Connect to an IRC server, if not already connected to one.\n");
@@ -696,6 +588,7 @@ static int handle_send_msg(struct irc_client **clientptr, char *input)
 		} else if (!strcasecmp(command, "fg")) {
 			/* Set the foreground channel */
 			channel = strsep(&s, " "); /* Even if *s is NULL, this is actually safe. See strsep(3) */
+			REQUIRED_PARAMETER(channel, "channel");
 			set_fg_chan(channel);
 			update_prompt(client); /* Foreground channel changed */
 		} else {
@@ -724,8 +617,12 @@ static int handle_send_msg(struct irc_client **clientptr, char *input)
 					res = irc_client_set_flags(client, flags);
 				}
 				res = irc_client_connect(client);
+				if (res) {
+					client_log(IRC_LOG_ERR, "Failed to connect to server %s\n", server);
+					return -1;
+				}
 				/* Now, start the main loop to receive messages from the server */
-				if (!res && pthread_create(&rx_thread_id, NULL, rx_thread, (void*) client)) {
+				if (pthread_create(&rx_thread_id, NULL, rx_thread, (void*) client)) {
 					return -1;
 				}
 				update_prompt(client);
@@ -761,7 +658,7 @@ static int handle_send_msg(struct irc_client **clientptr, char *input)
 				REQUIRED_PARAMETER(s, "message");
 				res = irc_client_action(client, channel, s);
 			} else if (!strcasecmp(command, "ctcp")) {
-				enum irc_ctcp ctcp;
+				enum irc_ctcp_type ctcp;
 				const char *ctcp_name;
 				channel = strsep(&s, " ");
 				REQUIRED_PARAMETER(channel, "target");
@@ -930,13 +827,15 @@ int main(int argc, char *argv[])
 		res = irc_client_connect(client); /* Actually connect */
 		if (res) {
 			mainres = -1;
+			printf("Failed to connect to %s:%d\n", server, port);
 			goto closepipes;
 		}
 
+		if (debug_level) {
+			printf("Now connected to %s://%s:%d\n", flags & IRC_CLIENT_USE_TLS ? "ircs" : "irc", server, port);
+		}
+
 		if (password) {
-			if (debug_level) {
-				printf("Connecting and authenticating...\n");
-			}
 			/* As soon as we create the client, destroy the password, so it doesn't linger in memory. */
 			if (password && password == passwordbuf) {
 				memset(passwordbuf, 0, sizeof(passwordbuf));
@@ -945,9 +844,9 @@ int main(int argc, char *argv[])
 			}
 			res = irc_client_login(client); /* Authenticate */
 			if (res) {
+				printf("Authentication failed!\n");
 				return -1;
 			}
-
 			if (fgchan) {
 				set_fg_chan(fgchan);
 			}

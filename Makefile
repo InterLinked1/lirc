@@ -7,20 +7,36 @@
 CC		= gcc
 CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototypes -Wmissing-prototypes -Wdeclaration-after-statement -Wmissing-declarations -Wmissing-format-attribute -Wnull-dereference -Wformat=2 -Wshadow -Wsizeof-pointer-memaccess -std=gnu99 -pthread -O0 -g -Wstack-protector -fno-omit-frame-pointer -fwrapv -D_FORTIFY_SOURCE=2
 EXE		= irc
+LIBNAME = libirc
 RM		= rm -f
 INSTALL = install
 
-MAIN_SRC := $(wildcard *.c)
-MAIN_OBJ = $(MAIN_SRC:.c=.o)
+all: library
 
-all: $(MAIN_OBJ)
-	$(CC) $(CFLAGS) -o $(EXE) *.o -lssl -lcrypto
+library: irc.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(LIBNAME).so $^ -lssl -lcrypto
+
+libinstall:
+	$(INSTALL) -m  755 $(LIBNAME).so "/usr/lib"
+	mkdir -p /usr/include/lirc
+	$(INSTALL) -m 755 *.h "/usr/include/lirc/"
+
+install: library libinstall
+
+client : client.o
+	$(CC) $(CFLAGS) -o $(EXE) $< -lirc
 
 %.o : %.c
 	$(CC) $(CFLAGS) -c $^
 
 clean :
 	$(RM) *.i *.o $(EXE)
+
+uninstall:
+	$(RM) /usr/lib/$(LIBNAME).so
+	$(RM) /usr/include/lirc/*.h
+	rm -rf /usr/include/lirc
 
 .PHONY: all
 .PHONY: install

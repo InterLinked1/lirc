@@ -5,8 +5,9 @@
  *
  * Naveen Albert <bbs@phreaknet.org>
  *
- * This program is free software, distributed under the terms of
- * the Mozilla Public License Version 2.
+ * This library is free software, distributed under the terms of
+ * the GNU Lesser General Public License Version 2.1. See the LICENSE file
+ * at the top of the source tree.
  */
 
 /*! \file
@@ -31,6 +32,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
+/* Compile the library with TLS support, using OpenSSL */
 #define HAVE_OPENSSL
 
 #ifdef HAVE_OPENSSL
@@ -41,9 +43,15 @@
 #ifndef ROOT_CERT_PATH
 #define ROOT_CERT_PATH "/etc/ssl/certs/ca-certificates.crt" /* Debian */
 #endif /* ROOT_CERT_PATH */
+
 #endif /* HAVE_OPENSSL */
 
 #include <assert.h>
+
+#define EXPOSE_IRC_MSG
+
+/* Compiling without the headers installed in the system directories yet,
+ * just use a relative path since it should be in the same directory. */
 #include "irc.h"
 
 /*! \brief A client for one IRC server. Use multiple clients for multiple servers or for multiple clients on the same server */
@@ -378,6 +386,93 @@ sslcleanup:
 	return -1;
 }
 
+void irc_loop(struct irc_client *client, FILE *logfile, void (*cb)(void *data, struct irc_msg *msg), void *data)
+{
+	ssize_t res = 0;
+	char readbuf[IRC_MAX_MSG_LEN + 1];
+	struct irc_msg msg;
+	char *prevbuf, *mybuf = readbuf;
+	size_t prevlen, mylen = sizeof(readbuf) - 1;
+	char *start, *eom;
+	int rounds;
+
+	start = readbuf;
+	for (;;) {
+begin:
+		rounds = 0;
+		if (mylen <= 1) {
+			/* IRC max message is 512, but we could have received multiple messages in one read() */
+			char *a;
+			/* Shift current message to beginning of the whole buffer */
+			for (a = readbuf; *start; a++, start++) {
+				*a = *start;
+			}
+			*a = '\0';
+			mybuf = a;
+			mylen = sizeof(readbuf) - 1 - (size_t) (mybuf - readbuf);
+			start = readbuf;
+			if (mylen <= 1) { /* Couldn't shift, whole buffer was full */
+				/* Could happen but this would not be valid. Abort read and reset. */
+				irc_err("Buffer truncation!\n");
+				start = readbuf;
+				mybuf = readbuf;
+				mylen = sizeof(readbuf) - 1;
+			}
+		}
+		/* Wait for data from server */
+		if (res != sizeof(readbuf) - 1) {
+			/* XXX We don't poll if we read() into an entirely full buffer and there's still more data to read.
+			 * poll() won't return until there's even more data (but it feels like it should). */
+			res = irc_poll(client, -1, -1);
+			if (res <= 0) {
+				break;
+			}
+		}
+		prevbuf = mybuf;
+		prevlen = mylen;
+		res = irc_read(client, mybuf, mylen);
+		if (res <= 0) {
+			break;
+		}
+
+		mybuf[res] = '\0'; /* Safe */
+		do {
+			eom = strstr(mybuf, "\r\n");
+			if (!eom) {
+				/* read returned incomplete message */
+				mybuf = prevbuf + res;
+				mylen = prevlen - (size_t) res;
+				goto begin; /* In a double loop, can't continue */
+			}
+
+			/* Got more than one message? */
+			if (*(eom + 2)) {
+				*(eom + 1) = '\0'; /* Null terminate before the next message starts */
+			}
+
+			memset(&msg, 0, sizeof(msg));
+			if (logfile) {
+				fprintf(logfile, "%s\n", start); /* Append to log file */
+			}
+			if (!irc_parse_msg(&msg, start) && !irc_parse_msg_type(&msg)) {
+				cb(data, &msg);
+			}
+
+			mylen -= (unsigned long) (eom + 2 - mybuf);
+			start = mybuf = eom + 2;
+			rounds++;
+		} while (mybuf && *mybuf);
+
+		start = mybuf = readbuf; /* Reset to beginning */
+		mylen = sizeof(readbuf) - 1;
+	}
+}
+
+int irc_disconnect(struct irc_client *client)
+{
+	return shutdown(client->sfd, SHUT_RDWR);
+}
+
 int irc_poll(struct irc_client *client, int ms, int fd)
 {
 	int res;
@@ -387,15 +482,15 @@ int irc_poll(struct irc_client *client, int ms, int fd)
 
 	pfds[0].fd = client->sfd;
 	pfds[0].events = POLLIN;
-	pfds[0].revents = 0;
 
 	if (fd != -1) {
 		pfds[1].fd = fd;
 		pfds[1].events = POLLIN;
-		pfds[1].revents = 0;
 	}
 
 	for (;;) {
+		pfds[0].revents = 0;
+		pfds[1].revents = 0;
 		res = poll(pfds, fd == -1 ? 1 : 2, ms);
 		if (res < 0) {
 			if (errno == EINTR) {
@@ -404,62 +499,74 @@ int irc_poll(struct irc_client *client, int ms, int fd)
 			irc_err("poll returned error: %s\n", strerror(errno));
 			client->active = 0;
 		}
+		if (pfds[0].revents & POLLIN) {
+			return 1;
+		} else if (pfds[1].revents & POLLIN) {
+			return 2;
+		}
+		if (pfds[0].revents) {
+			irc_debug(1, "Exceptional poll activity on client fd\n");
+		} else if (pfds[1].revents) {
+			irc_debug(1, "Exceptional poll activity on custom fd\n");
+		} else {
+			return 0; /* Nothing happened */
+		}
 		break;
 	}
 
-	return res;
+	return -1;
 }
 
-int irc_read(struct irc_client *client, char *buf, int len)
+ssize_t irc_read(struct irc_client *client, char *buf, size_t len)
 {
-	int bytes;
+	ssize_t bytes;
 #ifdef HAVE_OPENSSL
 	if (client->tls) {
-		bytes = (int) SSL_read(client->ssl, buf, (size_t) len);
+		bytes = SSL_read(client->ssl, buf, len);
 	} else
 #endif
 	{
-		bytes = (int) read(client->sfd, buf, (size_t) len);
+		bytes = read(client->sfd, buf, len);
 	}
 	if (bytes > 0) {
-		irc_debug(10, "<= %s %.*s", irc_client_hostname(client), bytes, buf); /* Should already end in LF, additional one not needed */
+		irc_debug(10, "<= %s %.*s", irc_client_hostname(client), (int) bytes, buf); /* Should already end in LF, additional one not needed */
 	} else {
-		irc_debug(1, "read returned %d%s%s\n", bytes, bytes == -1 ? ": " : "", bytes == -1 ? strerror(errno) : "");
+		irc_debug(1, "read returned %ld%s%s\n", bytes, bytes == -1 ? ": " : "", bytes == -1 ? strerror(errno) : "");
 		client->active = 0;
 	}
 	return bytes;
 }
 
-int irc_write(struct irc_client *client, const char *buf, int len)
+ssize_t irc_write(struct irc_client *client, const char *buf, size_t len)
 {
-	int written;
+	ssize_t written;
 
 	/* All IRC commands must end in CR LF. If not, the command will fail. */
 	if (len < 2 || *(buf + len - 2) != '\r' || *(buf + len - 1) != '\n') {
-		irc_err("Message %.*s does not end in CR LF\n", len, buf);
+		irc_err("Message %.*s does not end in CR LF\n", (int) len, buf);
 		return -1;
 	}
 
 #ifdef HAVE_OPENSSL
 	if (client->tls) {
-		written = (int) SSL_write(client->ssl, buf, (size_t) len);
+		written = SSL_write(client->ssl, buf, len);
 	} else
 #endif
 	{
-		written = (int) write(client->sfd, buf, (size_t) len);
+		written = write(client->sfd, buf, len);
 	}
-	if (written != len) {
-		irc_debug(5, "write returned %d\n", written);
+	if (written != (ssize_t) len) {
+		irc_debug(5, "write returned %ld\n", written);
 	}
-	irc_debug(10, "=> %s %.*s", irc_client_hostname(client), len, buf); /* Don't add our own LF at the end, the message already ends in one */
+	irc_debug(10, "=> %s %.*s", irc_client_hostname(client), (int) len, buf); /* Don't add our own LF at the end, the message already ends in one */
 	return written;
 }
 
 #define IRC_SEND_FIXED(client, s) irc_write(client, s "\r\n", strlen(s "\r\n"))
 
-int __attribute__ ((format (gnu_printf, 2, 3))) irc_write_fmt(struct irc_client *client, const char *fmt, ...)
+ssize_t __attribute__ ((format (gnu_printf, 2, 3))) irc_write_fmt(struct irc_client *client, const char *fmt, ...)
 {
-	int res;
+	ssize_t res;
 	char *buf = NULL;
 	int len = 0;
 	va_list ap;
@@ -479,7 +586,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) irc_write_fmt(struct irc_client 
 		irc_err("Failed to write dynamic buffer\n");
 		return -1;
 	}
-	res = irc_write(client, buf, len);
+	res = irc_write(client, buf, (size_t) len);
 	free(buf);
 	return res;
 }
@@ -538,7 +645,6 @@ int irc_client_auth(struct irc_client *client, const char *username, const char 
 
 	/* PASS must be sent before both USER and JOIN, if it exists */
 	if (password && *password) {
-		/*! \todo Is a newline needed after PASS? */
 		res |= irc_send(client, "PASS %s", password); /* Password, if applicable (not actually used all that much) */
 	}
 
@@ -574,19 +680,22 @@ static int irc_client_nickserv_login(struct irc_client *client, const char *user
 
 static int wait_for_response(struct irc_client *client, char *buf, size_t len, int ms, const char *s)
 {
-	int bytes;
+	ssize_t bytes;
 	for (;;) {
-		if (irc_poll(client, ms, -1) <= 0) {
+		int pres;
+		pres = irc_poll(client, ms, -1);
+		if (pres <= 0) {
 			return -1;
 		}
 		/* Read it into the caller's buffer, so that if further checks
 		 * need to be done when we return, they can be done. */
-		bytes = irc_read(client, buf, (int) len - 1);
+		bytes = irc_read(client, buf, len - 1);
 		if (bytes <= 0) {
 			return -1;
 		}
 		/* NUL terminate so we can use strstr */
 		buf[bytes] = '\0'; /* Safe */
+		printf("%s", buf); /* Print out whatever we received */
 		if (strstr(buf, s)) {
 			return 0;
 		}
@@ -640,7 +749,7 @@ static int do_sasl_auth(struct irc_client *client)
 	res = irc_send(client, "AUTHENTICATE %.*s", outlen, encoded);
 	free(encoded);
 
-	if (res || wait_for_response(client, readbuf, sizeof(readbuf), 5000, "SASL authentication successful")) { /* Expect: 903... SASL authentication successful */
+	if (res || wait_for_response(client, readbuf, sizeof(readbuf), 5000, "903")) { /* Expect: 903... SASL authentication successful */
 		return -1;
 	}
 
@@ -664,20 +773,26 @@ static int do_autojoin(struct irc_client *client)
 int irc_client_login(struct irc_client *client)
 {
 	if (client->sasl) { /* Some IRC servers require SASL from certain IPs to mitigate spam. */
+		irc_debug(3, "Performing SASL authentication\n");
 		if (do_sasl_auth(client)) {
 			irc_err("SASL authentication failed\n");
 			return -1;
 		}
 	} else if (client->password) { /* Authenticate to NickServ if we have a password */
 		char readbuf[256];
+		irc_debug(3, "Performing NickServ authentication\n");
 		/* We can skip this if we authenticated with SASL, since SASL will log in us */
 		if (irc_client_nickserv_login(client, client->username, client->password)) {
 			irc_err("Failed to authenticate for username %s\n", client->username);
 			return -1;
 		}
 		if (wait_for_response(client, readbuf, sizeof(readbuf), 5000, "You are now logged in")) { /* Expect: 900... You are now logged in as... */
+			irc_err("Failed to get authentication response from NickServ\n");
 			return -1;
 		}
+	} else {
+		irc_err("Cannot authenticate in current state\n");
+		return -1;
 	}
 
 	irc_info("Logged in to %s as %s successfully\n", client->hostname, client->username);
@@ -690,6 +805,9 @@ int irc_client_login(struct irc_client *client)
 	return 0;
 }
 
+/* A valid channel name starts with a symbol, not directly with an alphanumeric character */
+#define VALID_CHANNEL_NAME(c) (!isalnum(*c))
+
 int irc_client_channel_join(struct irc_client *client, const char *channel)
 {
 	if (!channel) {
@@ -697,9 +815,8 @@ int irc_client_channel_join(struct irc_client *client, const char *channel)
 		return -1;
 	}
 
-	/* # is not implicit, channels should include leading # or & */
-	if (*channel != '#' && *channel != '&') {
-		irc_err("Channel name '%s' is invalid, must begin with # or &\n", channel);
+	if (!VALID_CHANNEL_NAME(channel)) {
+		irc_err("Channel name '%s' is invalid, must begin with a symbol\n", channel);
 		return -1;
 	}
 
@@ -713,9 +830,8 @@ int irc_client_channel_leave(struct irc_client *client, const char *channel)
 		return -1;
 	}
 
-	/* # is not implicit, channels should include leading # or & */
-	if (*channel != '#' && *channel != '&') {
-		irc_err("Channel name '%s' is invalid, must begin with # or &\n", channel);
+	if (!VALID_CHANNEL_NAME(channel)) {
+		irc_err("Channel name '%s' is invalid, must begin with a symbol\n", channel);
 		return -1;
 	}
 
@@ -740,7 +856,13 @@ int irc_client_notice(struct irc_client *client, const char *channel, const char
 	return irc_send(client, "NOTICE %s :%s", channel, msg);
 }
 
-const char *irc_ctcp_name(enum irc_ctcp ctcp)
+int irc_client_pong(struct irc_client *client, struct irc_msg *msg)
+{
+	/* Reply with the same data that it sent us (some servers may actually require that) */
+	return irc_send(client, "PONG :%s", irc_msg_body(msg) ? irc_msg_body(msg) + 1 : ""); /* If there's a body, skip the : and bounce the rest back */
+}
+
+const char *irc_ctcp_name(enum irc_ctcp_type ctcp)
 {
 	switch (ctcp) {
 	case CTCP_ACTION:
@@ -757,7 +879,7 @@ const char *irc_ctcp_name(enum irc_ctcp ctcp)
 	return NULL;
 }
 
-enum irc_ctcp irc_ctcp_from_string(const char *s)
+enum irc_ctcp_type irc_ctcp_from_string(const char *s)
 {
 	if (!strcasecmp(s, "ACTION")) {
 		return CTCP_ACTION;
@@ -767,12 +889,13 @@ enum irc_ctcp irc_ctcp_from_string(const char *s)
 		return CTCP_TIME;
 	} else if (!strcasecmp(s, "PING")) {
 		return CTCP_PING;
+	} else {
+		irc_warn("Unknown CTCP code: %s\n", s);
+		return CTCP_UNKNOWN;
 	}
-	irc_warn("Unknown CTCP code: %s\n", s);
-	return -1;
 }
 
-int irc_client_ctcp_request(struct irc_client *client, const char *user, enum irc_ctcp ctcp)
+int irc_client_ctcp_request(struct irc_client *client, const char *user, enum irc_ctcp_type ctcp)
 {
 	const char *msg, *ctcp_name = irc_ctcp_name(ctcp);
 
@@ -798,7 +921,7 @@ int irc_client_ctcp_request(struct irc_client *client, const char *user, enum ir
 	return irc_send(client, "PRIVMSG %s :" "\x01" "%s%s%s" "\x01", user, ctcp_name, msg ? " " : "", msg ? msg : "");
 }
 
-int irc_client_ctcp_reply(struct irc_client *client, const char *username, enum irc_ctcp ctcp, const char *data)
+int irc_client_ctcp_reply(struct irc_client *client, const char *username, enum irc_ctcp_type ctcp, const char *data)
 {
 	const char *ctcp_name = irc_ctcp_name(ctcp);
 
@@ -846,6 +969,110 @@ int irc_client_invite_user(struct irc_client *client, const char *nickname, cons
 	return irc_send(client, "INVITE %s %s", nickname, channel);
 }
 
+#define PARSE_CHANNEL() \
+	/* Format of msg->body here is CHANNEL :BODY */ \
+	msg->channel = strsep(&msg->body, " "); \
+	if (msg->body && *msg->body == ':') { \
+		msg->body++; /* Skip : */ \
+	}
+
+int irc_parse_msg_type(struct irc_msg *msg)
+{
+	const char *c;
+
+	/* We start off with msg->type as IRC_UNPARSED */
+
+	if (msg->numeric) {
+		msg->type = IRC_NUMERIC;
+		return 0;
+	}
+
+	/* else, it's a command... or it should be.
+	 * If it's not, the caller probably failed to call irc_parse_msg first. */
+	if (!msg->command) {
+		irc_err("Improper usage of %s\n", __func__);
+		return -1;
+	}
+
+	c = msg->command;
+	if (!strcasecmp(c, "PRIVMSG")) { /* This is intentionally first, as it's the most common one. */
+		msg->type = IRC_CMD_PRIVMSG;
+		PARSE_CHANNEL();
+		if (*msg->body == 0x01) {
+			msg->ctcp = 1;
+		}
+	} else if (!strcasecmp(c, "NOTICE")) {
+		msg->type = IRC_CMD_NOTICE;
+		PARSE_CHANNEL();
+		if (*msg->body == 0x01) {
+			msg->ctcp = 1;
+		}
+	} else if (!strcasecmp(c, "PING")) {
+		msg->type = IRC_CMD_PING;
+	} else if (!strcasecmp(c, "JOIN")) {
+		msg->type = IRC_CMD_JOIN;
+		PARSE_CHANNEL();
+	} else if (!strcasecmp(c, "PART")) {
+		msg->type = IRC_CMD_PART;
+		PARSE_CHANNEL();
+	} else if (!strcasecmp(c, "QUIT")) {
+		msg->type = IRC_CMD_QUIT;
+	} else if (!strcasecmp(c, "KICK")) {
+		msg->type = IRC_CMD_KICK;
+		PARSE_CHANNEL();
+	} else if (!strcasecmp(c, "NICK")) {
+		msg->type = IRC_CMD_NICK;
+	} else if (!strcasecmp(c, "MODE")) {
+		msg->type = IRC_CMD_MODE;
+		PARSE_CHANNEL();
+	} else if (!strcasecmp(c, "TOPIC")) {
+		msg->type = IRC_CMD_TOPIC;
+		PARSE_CHANNEL();
+	} else if (!strcasecmp(c, "ERROR")) {
+		msg->type = IRC_CMD_ERROR;
+	} else {
+		irc_debug(1, "Unhandled message type: %s\n", c);
+		msg->type = IRC_CMD_OTHER;
+	}
+	return 0;
+}
+
+int irc_parse_msg_ctcp(struct irc_msg *msg)
+{
+	char *tmp, *ctcp_name;
+
+	if (*msg->body != 0x01) {
+		irc_err("Not a CTCP message\n");
+		return -1;
+	}
+
+	if (!*++msg->body) {
+		irc_err("Empty CTCP message\n");
+		return -1;
+	}
+
+	tmp = strchr(msg->body, 0x01);
+	if (!tmp) {
+		irc_err("Unterminated CTCP message\n");
+		return -1;
+	}
+
+	*tmp = '\0';
+
+	ctcp_name = strsep(&msg->body, " ");
+	if (!ctcp_name || !*ctcp_name) {
+		return -1;
+	}
+	msg->ctcp_type = irc_ctcp_from_string(ctcp_name);
+	if (msg->ctcp_type == CTCP_UNKNOWN) {
+		irc_warn("Unsupported CTCP extended data type: %s\n", ctcp_name);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*! \brief Zero allocation message parsing */
 int irc_parse_msg(struct irc_msg *msg, char *s)
 {
 	/* e.g. :tantalum.libera.chat 001 username :Welcome to the Libera.Chat Internet Relay Chat Network username */
@@ -891,4 +1118,49 @@ int irc_parse_msg(struct irc_msg *msg, char *s)
 		}
 	}
 	return 0;
+}
+
+/* Accessor functions */
+
+/*! \note Not const as callers may want to mutate it */
+char *irc_msg_prefix(struct irc_msg *msg)
+{
+	return msg->prefix;
+}
+
+int irc_msg_numeric(struct irc_msg *msg)
+{
+	return msg->numeric;
+}
+
+const char *irc_msg_command(struct irc_msg *msg)
+{
+	return msg->command;
+}
+
+enum irc_msg_type irc_msg_type(struct irc_msg *msg)
+{
+	return msg->type;
+}
+
+int irc_msg_is_ctcp(struct irc_msg *msg)
+{
+	return msg->ctcp;
+}
+
+enum irc_ctcp_type irc_msg_ctcp_type(struct irc_msg *msg)
+{
+	return msg->ctcp_type;
+}
+
+const char *irc_msg_channel(struct irc_msg *msg)
+{
+	return msg->channel;
+}
+
+/*! \note Not const, because it's the caller's memory, and the caller
+ * might want to mutate the body for ease of further parsing */
+char *irc_msg_body(struct irc_msg *msg)
+{
+	return msg->body;
 }

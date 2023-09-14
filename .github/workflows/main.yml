@@ -28,4 +28,6 @@ jobs:
        run: |
           echo Beginning build
           make
+          sudo make install
+          make client
           
