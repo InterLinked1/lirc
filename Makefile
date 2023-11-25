@@ -17,7 +17,7 @@ library: irc.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(LIBNAME).so $^ -lssl -lcrypto
 
-libinstall:
+libinstall: library
 	$(INSTALL) -m  755 $(LIBNAME).so "/usr/lib"
 	mkdir -p /usr/include/lirc
 	$(INSTALL) -m 755 *.h "/usr/include/lirc/"
@@ -28,7 +28,7 @@ client : client.o
 	$(CC) $(CFLAGS) -o $(EXE) $< -lirc
 
 %.o : %.c
-	$(CC) $(CFLAGS) -c $^
+	$(CC) $(CFLAGS) -fPIC -c $^
 
 clean :
 	$(RM) *.i *.o $(EXE)

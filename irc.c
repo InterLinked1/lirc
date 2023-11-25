@@ -29,6 +29,7 @@
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h> /* use sockaddr_in */
 #include <netdb.h>
 #include <arpa/inet.h>
 
