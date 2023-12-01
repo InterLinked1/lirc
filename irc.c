@@ -540,24 +540,34 @@ ssize_t irc_read(struct irc_client *client, char *buf, size_t len)
 
 ssize_t irc_write(struct irc_client *client, const char *buf, size_t len)
 {
-	ssize_t written;
+	size_t written = 0;
 
 	/* All IRC commands must end in CR LF. If not, the command will fail. */
 	if (len < 2 || *(buf + len - 2) != '\r' || *(buf + len - 1) != '\n') {
-		irc_err("Message %.*s does not end in CR LF\n", (int) len, buf);
+		irc_err("Message '%.*s' does not end in CR LF\n", (int) len, buf);
 		return -1;
 	}
 
+	while (len > 0) {
+		ssize_t res;
 #ifdef HAVE_OPENSSL
-	if (client->tls) {
-		written = SSL_write(client->ssl, buf, len);
-	} else
+		if (client->tls) {
+			res = SSL_write(client->ssl, buf, len);
+		} else
 #endif
-	{
-		written = write(client->sfd, buf, len);
+		{
+			res = write(client->sfd, buf, len);
+		}
+		if (res <= 0) {
+			written = res;
+			break;
+		}
+		buf += res;
+		len -= res;
+		written += res;
 	}
-	if (written != (ssize_t) len) {
-		irc_debug(5, "write returned %ld\n", written);
+	if (written <= 0) {
+		irc_debug(1, "write returned %ld\n", written);
 	}
 	irc_debug(10, "=> %s %.*s", irc_client_hostname(client), (int) len, buf); /* Don't add our own LF at the end, the message already ends in one */
 	return written;
@@ -568,7 +578,7 @@ ssize_t irc_write(struct irc_client *client, const char *buf, size_t len)
 ssize_t __attribute__ ((format (gnu_printf, 2, 3))) irc_write_fmt(struct irc_client *client, const char *fmt, ...)
 {
 	ssize_t res;
-	char *buf = NULL;
+	char buf[IRC_MAX_MSG_LEN + 1];
 	int len = 0;
 	va_list ap;
 
@@ -580,15 +590,15 @@ ssize_t __attribute__ ((format (gnu_printf, 2, 3))) irc_write_fmt(struct irc_cli
 
 	/* Action Name and ID */
 	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
+	/* No need for dynamic allocation, since a valid command is at most 512 bytes. */
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 
-	if (len < 0 || !buf) {
-		irc_err("Failed to write dynamic buffer\n");
-		return -1;
+	if (len >= (int) sizeof(buf)) {
+		irc_warn("Truncation occured trying to send %d-byte command\n", len);
 	}
+
 	res = irc_write(client, buf, (size_t) len);
-	free(buf);
 	return res;
 }
 
