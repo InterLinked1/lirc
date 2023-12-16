@@ -273,6 +273,7 @@ int irc_client_connect(struct irc_client *client)
 	}
 
 	for (ai = res; ai; ai = ai->ai_next) {
+		ip[0] = '\0'; /* Avoid possibly uninitialized usage warning */
 		if (ai->ai_family == AF_INET) {
 			saddr_in = (struct sockaddr_in *) ai->ai_addr;
 			saddr_in->sin_port = htons((uint16_t) client->port);
