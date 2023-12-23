@@ -885,6 +885,8 @@ const char *irc_ctcp_name(enum irc_ctcp_type ctcp)
 		return "TIME";
 	case CTCP_PING:
 		return "PING";
+	case CTCP_DCC:
+		return "DCC";
 	default:
 		break;
 	}
@@ -901,6 +903,8 @@ enum irc_ctcp_type irc_ctcp_from_string(const char *s)
 		return CTCP_TIME;
 	} else if (!strcasecmp(s, "PING")) {
 		return CTCP_PING;
+	} else if (!strcasecmp(s, "DCC")) {
+		return CTCP_DCC;
 	} else {
 		irc_warn("Unknown CTCP code: %s\n", s);
 		return CTCP_UNKNOWN;
@@ -925,6 +929,7 @@ int irc_client_ctcp_request(struct irc_client *client, const char *user, enum ir
 			break;
 		case CTCP_TIME:
 		case CTCP_VERSION:
+		case CTCP_DCC:
 		default:
 			msg = NULL;
 			break;

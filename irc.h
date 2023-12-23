@@ -12,7 +12,7 @@
 
 #define LIRC_VERSION_MAJOR 0
 #define LIRC_VERSION_MINOR 2
-#define LIRC_VERSION_PATCH 0
+#define LIRC_VERSION_PATCH 1
 
 /*! \brief Maximum length of an IRC message, including trailing CR LF */
 #define IRC_MAX_MSG_LEN 512
@@ -47,6 +47,7 @@ enum irc_ctcp_type {
 	CTCP_VERSION,
 	CTCP_TIME,
 	CTCP_PING,
+	CTCP_DCC,
 	/* XXX Others missing */
 	CTCP_UNKNOWN,
 };
