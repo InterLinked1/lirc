@@ -541,6 +541,8 @@ ssize_t irc_read(struct irc_client *client, char *buf, size_t len)
 
 ssize_t irc_write(struct irc_client *client, const char *buf, size_t len)
 {
+	const char *origbuf = buf;
+	size_t origlen = len;
 	size_t written = 0;
 
 	/* All IRC commands must end in CR LF. If not, the command will fail. */
@@ -567,10 +569,10 @@ ssize_t irc_write(struct irc_client *client, const char *buf, size_t len)
 		len -= res;
 		written += res;
 	}
-	if (written <= 0) {
+	if (written <= 0 || written != origlen) {
 		irc_debug(1, "write returned %ld\n", written);
 	}
-	irc_debug(10, "=> %s %.*s", irc_client_hostname(client), (int) len, buf); /* Don't add our own LF at the end, the message already ends in one */
+	irc_debug(10, "=> %s [%lu] %.*s", irc_client_hostname(client), origlen, (int) origlen, origbuf); /* Don't add our own LF at the end, the message already ends in one */
 	return written;
 }
 
