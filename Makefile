@@ -5,7 +5,7 @@
 #
 
 CC		= gcc
-CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototypes -Wmissing-prototypes -Wdeclaration-after-statement -Wmissing-declarations -Wmissing-format-attribute -Wnull-dereference -Wformat=2 -Wshadow -Wsizeof-pointer-memaccess -std=gnu99 -pthread -O0 -g -Wstack-protector -fno-omit-frame-pointer -fwrapv -D_FORTIFY_SOURCE=2
+CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototypes -Wmissing-prototypes -Wdeclaration-after-statement -Wmissing-declarations -Wmissing-format-attribute -Wnull-dereference -Wformat=2 -Wshadow -Wsizeof-pointer-memaccess -std=gnu99 -pthread -O3 -g -Wstack-protector -fno-omit-frame-pointer -fwrapv -D_FORTIFY_SOURCE=2
 EXE		= irc
 LIBNAME = libirc
 RM		= rm -f
@@ -28,7 +28,7 @@ client : client.o
 	$(CC) $(CFLAGS) -o $(EXE) $< -lirc
 
 %.o : %.c
-	$(CC) $(CFLAGS) -fPIC -c $^
+	$(CC) $(CFLAGS) -fPIC -c -Wno-unused-result $^
 
 clean :
 	$(RM) *.i *.o $(EXE)
