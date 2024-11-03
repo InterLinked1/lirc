@@ -91,7 +91,7 @@ static int set_term(void)
 static inline void print_time(int fd)
 {
 	time_t lognow;
-    struct tm logdate;
+	struct tm logdate;
 	struct timeval now;
 	char datestr[20];
 
