@@ -716,7 +716,7 @@ int main(int argc, char *argv[])
 	int res, flags = 0;
 	unsigned int port = 0;
 	char passwordbuf[73];
-	const char *server = NULL, *username = NULL, *autojoin = NULL, *fgchan = NULL;
+	const char *server = "127.0.0.1", *username = NULL, *autojoin = NULL, *fgchan = NULL;
 	char *password = NULL; /* non-const so we can zero it out later */
 
 	/* Parse options */
