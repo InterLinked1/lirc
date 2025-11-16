@@ -12,7 +12,7 @@
 
 #define LIRC_VERSION_MAJOR 1
 #define LIRC_VERSION_MINOR 0
-#define LIRC_VERSION_PATCH 0
+#define LIRC_VERSION_PATCH 1
 
 /*! \brief Maximum length of an IRC message, including trailing CR LF */
 #define IRC_MAX_MSG_LEN 512

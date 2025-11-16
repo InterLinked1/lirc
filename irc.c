@@ -998,6 +998,7 @@ int irc_client_invite_user(struct irc_client *client, const char *nickname, cons
 int irc_parse_msg_type(struct irc_msg *msg)
 {
 	const char *c;
+	char *tmp;
 
 	/* We start off with msg->type as IRC_UNPARSED */
 
@@ -1011,6 +1012,12 @@ int irc_parse_msg_type(struct irc_msg *msg)
 	if (!msg->command) {
 		irc_err("Improper usage of %s\n", __func__);
 		return -1;
+	}
+
+	/* Trim off the trailing CR LF, so it doesn't end up in one of the parsed fields. */
+	tmp = strchr(msg->body, '\r');
+	if (tmp) {
+		*tmp = '\0';
 	}
 
 	c = msg->command;
