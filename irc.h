@@ -11,8 +11,8 @@
  */
 
 #define LIRC_VERSION_MAJOR 1
-#define LIRC_VERSION_MINOR 0
-#define LIRC_VERSION_PATCH 1
+#define LIRC_VERSION_MINOR 1
+#define LIRC_VERSION_PATCH 0
 
 /*! \brief Maximum length of an IRC message, including trailing CR LF */
 #define IRC_MAX_MSG_LEN 512
@@ -29,6 +29,7 @@ enum irc_msg_type {
 	IRC_CMD_PRIVMSG,
 	IRC_CMD_NOTICE,		/*!< Same as PRIVMSG, but should never be acknowledged, to prevent loops */
 	IRC_CMD_PING,
+	IRC_CMD_PONG,
 	IRC_CMD_JOIN,
 	IRC_CMD_PART,
 	IRC_CMD_QUIT,
@@ -203,6 +204,18 @@ int irc_client_msg(struct irc_client *client, const char *channel, const char *m
  *         This will inhibit any autoresponses, e.g. to prevent loops by bots
  */
 int irc_client_notice(struct irc_client *client, const char *channel, const char *msg);
+
+/*!
+ * \brief Send a PING message to the server
+ * \param client
+ * \param pingmsg A user-provided message that will be echoed back in the PONG reply
+ * \retval 0 on success, -1 on failure
+ * \note Servers are responsible for pinging clients, so normally, clients don't
+ *       need to initiate pings to the server. However, this can be useful
+ *       if the client wants to measure lag (by processing IRC_CMD_PONG).
+ *       Note the PONG response has format '<hostname> :<ping message>'
+ */
+int irc_client_ping(struct irc_client *client, const char *pingmsg);
 
 /*!
  * \brief Send a PONG reply to a PING message

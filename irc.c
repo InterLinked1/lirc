@@ -870,6 +870,11 @@ int irc_client_notice(struct irc_client *client, const char *channel, const char
 	return irc_send(client, "NOTICE %s :%s", channel, msg);
 }
 
+int irc_client_ping(struct irc_client *client, const char *pingmsg)
+{
+	return irc_send(client, "PING :%s", pingmsg);
+}
+
 int irc_client_pong(struct irc_client *client, struct irc_msg *msg)
 {
 	/* Reply with the same data that it sent us (some servers may actually require that) */
@@ -1035,6 +1040,8 @@ int irc_parse_msg_type(struct irc_msg *msg)
 		}
 	} else if (!strcasecmp(c, "PING")) {
 		msg->type = IRC_CMD_PING;
+	} else if (!strcasecmp(c, "PONG")) {
+		msg->type = IRC_CMD_PONG;
 	} else if (!strcasecmp(c, "JOIN")) {
 		msg->type = IRC_CMD_JOIN;
 		PARSE_CHANNEL();
