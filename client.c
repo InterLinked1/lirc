@@ -123,6 +123,11 @@ static void __client_log(enum irc_log_level level, int sublevel, const char *fil
 			print_time(fd);
 			dprintf(fd, "[%sINFO %s] %s:%d %s() %s", COLOR_CYAN, COLOR_RESET, file, line, func, msg);
 			break;
+		case IRC_LOG_VERBOSE:
+			/* irc.c guarantees this is newline terminated, so we can safely prefix with CR
+			 * to ensure we overwrite the prompt, without worrying about overwriting something we just wrote. */
+			dprintf(fd, "\r%s", msg);
+			break;
 		case IRC_LOG_DEBUG:
 			if (debug_level >= sublevel) {
 				print_time(fd);

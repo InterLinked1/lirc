@@ -12,7 +12,7 @@
 
 #define LIRC_VERSION_MAJOR 1
 #define LIRC_VERSION_MINOR 1
-#define LIRC_VERSION_PATCH 0
+#define LIRC_VERSION_PATCH 1
 
 /*! \brief Maximum length of an IRC message, including trailing CR LF */
 #define IRC_MAX_MSG_LEN 512
@@ -81,6 +81,7 @@ enum irc_log_level {
 	IRC_LOG_ERR,
 	IRC_LOG_WARN,
 	IRC_LOG_INFO,
+	IRC_LOG_VERBOSE,
 	IRC_LOG_DEBUG,
 };
 

@@ -88,6 +88,7 @@ void irc_log_callback(void (*callback)(enum irc_log_level level, int sublevel, c
 #define irc_err(fmt, ...) __irc_log(IRC_LOG_ERR, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
 #define irc_warn(fmt, ...) __irc_log(IRC_LOG_WARN, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
 #define irc_info(fmt, ...) __irc_log(IRC_LOG_INFO, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
+#define irc_verbose(fmt, ...) __irc_log(IRC_LOG_VERBOSE, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
 #define irc_debug(level, fmt, ...) __irc_log(IRC_LOG_DEBUG, level, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
 
 static void __attribute__ ((format (gnu_printf, 6, 7))) __irc_log(enum irc_log_level level, int sublevel, const char *file, int line, const char *func, const char *fmt, ...)
@@ -709,7 +710,9 @@ static int wait_for_response(struct irc_client *client, char *buf, size_t len, i
 		}
 		/* NUL terminate so we can use strstr */
 		buf[bytes] = '\0'; /* Safe */
-		printf("%s", buf); /* Print out whatever we received */
+		/* Print out whatever we receive, typically these are NOTICE messages.
+		 * If it already has a newline, don't add one, but if it doesn't, do. */
+		irc_verbose("%s%s", buf, strchr(buf, '\n') ? "" : "\n");
 		if (strstr(buf, s)) {
 			return 0;
 		}
