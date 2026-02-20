@@ -397,12 +397,10 @@ void irc_loop(struct irc_client *client, FILE *logfile, void (*cb)(void *data, s
 	char *prevbuf, *mybuf = readbuf;
 	size_t prevlen, mylen = sizeof(readbuf) - 1;
 	char *start, *eom;
-	int rounds;
 
 	start = readbuf;
 	for (;;) {
 begin:
-		rounds = 0;
 		if (mylen <= 1) {
 			/* IRC max message is 512, but we could have received multiple messages in one read() */
 			char *a;
@@ -463,7 +461,6 @@ begin:
 
 			mylen -= (unsigned long) (eom + 2 - mybuf);
 			start = mybuf = eom + 2;
-			rounds++;
 		} while (mybuf && *mybuf);
 
 		start = mybuf = readbuf; /* Reset to beginning */
@@ -690,7 +687,7 @@ static int irc_client_nickserv_login(struct irc_client *client, const char *user
 
 	/* Confused about the difference between the two? See https://stackoverflow.com/questions/31666247/ */
 	res |= irc_send(client, "PRIVMSG NickServ :IDENTIFY %s %s", username, password); /* Actual IRC nickname */
-	return 0;
+	return res;
 }
 
 static int wait_for_response(struct irc_client *client, char *buf, size_t len, int ms, const char *s)
