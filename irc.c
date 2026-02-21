@@ -1019,6 +1019,12 @@ int irc_parse_msg_type(struct irc_msg *msg)
 		return -1;
 	}
 
+	/* If the message is malformed for some reason, abort parsing */
+	if (!msg->body) {
+		irc_err("IRC message has no body\n");
+		return -1;
+	}
+
 	/* Trim off the trailing CR LF, so it doesn't end up in one of the parsed fields. */
 	tmp = strchr(msg->body, '\r');
 	if (tmp) {
@@ -1026,6 +1032,11 @@ int irc_parse_msg_type(struct irc_msg *msg)
 	}
 
 	c = msg->command;
+	/* If invalid message, abort parsing */
+	if (!*c) {
+		irc_err("IRC message has no command\n");
+		return -1;
+	}
 	if (!strcasecmp(c, "PRIVMSG")) { /* This is intentionally first, as it's the most common one. */
 		msg->type = IRC_CMD_PRIVMSG;
 		PARSE_CHANNEL();
