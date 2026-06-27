@@ -342,7 +342,11 @@ int irc_client_connect(struct irc_client *client)
 			goto sslcleanup;
 		}
 		/* Verify cert */
+#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+		server_cert = SSL_get1_peer_certificate(client->ssl);
+#else
 		server_cert = SSL_get_peer_certificate(client->ssl);
+#endif
 		if (!server_cert) {
 			irc_err("Failed to get peer certificate\n");
 			goto sslcleanup;
